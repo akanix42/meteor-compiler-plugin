@@ -1,0 +1,7 @@
+{
+  "name": "meteor-compiler-plugin",
+  "version": "0.0.1",
+  "author": "Nathan Reid <nathan-code@nathantreid.com",
+  "license": "ISC",
+  "private": true
+}
