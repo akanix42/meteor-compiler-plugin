@@ -1,14 +1,13 @@
 import { createReplacer } from 'regex-replacer';
 
-import { createReplacer } from 'regex-replacer';
-
-import pluginOptionsLoader from 'meteor-build-plugin-options';
+import pluginOptionsLoader from './bp/options';
+// import pluginOptionsLoader from 'meteor-build-plugin-options';
 
 const optionsLoader = pluginOptionsLoader.registerPackage('compiler', { getDefaultOptions, processOptions });
 
 
 const pluginOptions = {};
-pluginOptions.options = optionsLoader.load();
+pluginOptions.options = optionsLoader.loadOptions();
 
 export { loadOptions as reloadOptions };
 export default pluginOptions;
@@ -18,7 +17,7 @@ export function getHash() {
 }
 
 function loadOptions() {
-  return pluginOptions.options = optionsLoader.load();
+  return pluginOptions.options = optionsLoader.loadOptions();
 }
 
 function getDefaultOptions() {
@@ -46,11 +45,16 @@ function getDefaultOptions() {
 }
 
 function processOptions(options) {
-  processPassthroughPathExpressions(options);
+  processPassthroughPathExpressions(options.buildPlugin);
 
   return pluginOptions.options = options;
 
   function processPassthroughPathExpressions(options) {
+    if (!options.passthroughPaths) {
+      options.passthroughPaths = [];
+      return;
+    }
+
     const createPatternRegExp = pattern => typeof pattern === 'string' ? new RegExp(pattern) : new RegExp(pattern[0], pattern[1]);
     options.passthroughPaths = options.passthroughPaths.map(createPatternRegExp);
   }

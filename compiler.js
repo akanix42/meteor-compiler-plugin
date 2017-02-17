@@ -3,7 +3,7 @@ import path from 'path';
 import { MultiFileCachingCompiler } from 'meteor/caching-compiler';
 import { Meteor } from 'meteor/meteor';
 import { Babel } from 'meteor/babel-compiler';
-//
+import PathHelpers from 'meteor-build-plugin-helper-path-helpers';
 import recursiveUnwrapped from 'recursive-readdir';
 import IncludedFile from 'meteor-build-plugin-helper-included-file';
 import { reloadOptions } from './options';
@@ -12,7 +12,7 @@ import { reloadOptions } from './options';
 // import getOutputPath from './get-output-path';
 // import profile from './helpers/profile';
 // import ImportPathHelpers from './helpers/import-path-helpers';
-// import { stripIndent, stripIndents } from 'common-tags';
+import { stripIndent, stripIndents } from 'common-tags';
 //
 // let pluginOptions = pluginOptionsWrapper.options;
 const recursive = Meteor.wrapAsync(recursiveUnwrapped);
@@ -42,13 +42,13 @@ export default class Compiler extends MultiFileCachingCompiler {
     if (!buildPluginOptions.enableCache) {
       this._cache.reset();
     }
-    this.optionsHash = pluginOptions.hash;
     const start = profile();
+    this.optionsHash = this.pluginOptions.hash;
 
     files = removeFilesFromExcludedFolders(files);
     files = addFilesFromIncludedFolders(files);
 
-    this._setupPreprocessors();
+    this._setupPreprocessors(files);
     this.filesByName = null;
 
     super.processFilesForTarget(files);
@@ -83,7 +83,7 @@ export default class Compiler extends MultiFileCachingCompiler {
     }
   }
 
-  _setupPreprocessors() {
+  _setupPreprocessors(files) {
     this.processors = this.pluginOptions.processors.map(processorEntry => {
       let processorPackage, options;
       if (typeof processorEntry === 'string') {
@@ -93,8 +93,8 @@ export default class Compiler extends MultiFileCachingCompiler {
         options = processorEntry[1];
       }
 
-      const Processor = require(processorPackage);
-      return new Processor(options)
+      const Processor = files[0].require(processorPackage).default;
+      return new Processor(options, this)
     });
   }
 
@@ -103,73 +103,76 @@ export default class Compiler extends MultiFileCachingCompiler {
       return inputFile.isRoot;
     }
 
-    let isRoot = null;
-    const fileExtension = path.extname(inputFile.getPathInPackage()).substring(1);
+    this._setProcessors(inputFile);
 
-    this.processors.forEach(processor => {
-      if (processor.handlesFileExtension(fileExtension)) {
+    let isRoot = null;
+    for (let i = 0; i < inputFile.processors.length; i++) {
+      let processor = inputFile.processors[i];
         if (processor.isRoot(inputFile)) {
-          inputFile.processors = inputFile.processors || [];
-          inputFile.processors.push(processor);
           inputFile.isRoot = true;
           return true;
         }
         isRoot = false;
       }
-    });
 
     /* If no processors handle this file, it's excluded from processing. */
     inputFile.isRoot = isRoot === null ? false : isRoot;
     return inputFile.isRoot;
   }
 
+  _setProcessors(inputFile) {
+    const fileExtension = path.extname(inputFile.getPathInPackage()).substring(1);
+    for (let i = 0; i < this.processors.length; i++) {
+      let processor = this.processors[i];
+      if (processor.handlesFileExtension(fileExtension)) {
+          inputFile.processors = inputFile.processors || [];
+          inputFile.processors.push(processor);
+      }
+    }
+  }
+
   compileOneFile(inputFile, filesByName) {
     this._updateFilesByName(filesByName);
 
     this._prepInputFile(inputFile);
-    inputFile.processors.forEach(processor=>processor.process(inputFile, filesByName).await())
-    // this._preprocessFile(inputFile, filesByName);
-    // this._transpileCssModulesToCss(inputFile, filesByName).await();
-
-    const compileResult = this._generateOutput(inputFile);
-    return { compileResult, referencedImportPaths: inputFile.referencedImportPaths };
+    const processingResult = inputFile.processors.reduce((result, processor) => Promise.await(processor.process(inputFile, result)), { maps: {} });
+    
+    const compileResult = this._generateOutput(inputFile, processingResult);
+    return { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
   }
 
-  _generateOutput(inputFile) {
+  _generateOutput(inputFile, processingResult) {
     const filePath = inputFile.getPathInPackage();
     const isLazy = filePath.split('/').indexOf('imports') >= 0;
     const shouldAddStylesheet = inputFile.getArch().indexOf('web') === 0;
-
-    const compileResult = { isLazy, filePath };
-    if (!isLazy && shouldAddStylesheet && inputFile.contents) {
-      compileResult.stylesheet = inputFile.contents;
-    }
-
-    const importsCode = inputFile.imports
-      ? inputFile.imports.map(importPath => `import '${importPath}';`).join('\n')
-      : '';
-
-    const stylesheetCode = (isLazy && shouldAddStylesheet && inputFile.contents)
-      ? stripIndent`
+    const finalResult = { isLazy, filePath };
+    let stylesheetCode = '', importsCode = '';
+    if (!isLazy && shouldAddStylesheet && processingResult.css) {
+      finalResult.stylesheet = processingResult.css;
+    } else {
+      if (inputFile.imports.length) {
+        importsCode = inputFile.imports.map(importPath => `import '${importPath}';`).join('\n');
+      }
+      stylesheetCode = stripIndent`
          import modules from 'meteor/modules';
-				 modules.addStyles(${JSON.stringify(inputFile.contents)});`
-      : '';
+				 modules.addStyles(${JSON.stringify(processingResult.css)});`;
+    }
+    //
+    // const tokensCode = inputFile.js
+    //   ? stripIndent`
+    //      const styles = ${JSON.stringify(inputFile.tokens)};
+    //      export { styles as default, styles };`
+    //   : '';
 
-    const tokensCode = inputFile.tokens
-      ? stripIndent`
-         const styles = ${JSON.stringify(inputFile.tokens)};
-         export { styles as default, styles };`
-      : '';
-
-    if (importsCode || stylesheetCode || tokensCode) {
-      compileResult.javascript = tryBabelCompile(stripIndents`
+    if (importsCode || stylesheetCode || processingResult.js) {
+      finalResult.javascript = tryBabelCompile(stripIndents`
 					${importsCode}
 					${stylesheetCode}
-					${tokensCode}`
+					${processingResult.js}`
       );
     }
 
-    return compileResult;
+    return finalResult;
 
     function tryBabelCompile(code) {
       try {
@@ -209,26 +212,12 @@ export default class Compiler extends MultiFileCachingCompiler {
     file.isPrepped = true;
   }
 
-  _preprocessFile(inputFile, filesByName) {
-    if (inputFile.preprocessor) {
-      inputFile.preprocessor.process(inputFile, filesByName);
-    }
-  }
-
-  async _transpileCssModulesToCss(file, filesByName) {
-    const startedAt = profile();
-
-    await this.cssModulesProcessor.process(file, filesByName);
-
-    this.profilingResults._transpileCssModulesToCss = (this.profilingResults._transpileCssModulesToCss || 0) + startedAt;
-  }
-
   addCompileResult(file, result) {
     if (result.stylesheet) {
       file.addStylesheet({
         data: result.stylesheet,
-        path: getOutputPath(result.filePath, this.buildPluginOptions.outputCssFilePath) + '.css',
-        sourcePath: getOutputPath(result.filePath, this.buildPluginOptions.outputCssFilePath) + '.css',
+        path: `${result.filePath}.css`,
+        sourcePath: `${result.filePath}.css`,
         sourceMap: JSON.stringify(result.sourceMap),
         lazy: false
       });
@@ -237,8 +226,8 @@ export default class Compiler extends MultiFileCachingCompiler {
     if (result.javascript) {
       file.addJavaScript({
         data: result.javascript,
-        path: getOutputPath(result.filePath, this.buildPluginOptions.outputJsFilePath) + '.js',
-        sourcePath: getOutputPath(result.filePath, this.buildPluginOptions.outputJsFilePath),
+        path: `${result.filePath}.js`,
+        sourcePath: result.filePath,
         lazy: result.isLazy,
         bare: false,
       });
@@ -254,10 +243,50 @@ export default class Compiler extends MultiFileCachingCompiler {
   }
 
   getAbsoluteImportPath(inputFile) {
-    const importPath = PathHelpers.getImportPathInPackage(inputFile);
+    const importPath = PathHelpers.getPathInPackage(inputFile);
     inputFile.importPath = importPath;
     return importPath;
   }
 
+  importFile(filePath, rootFile) {
+    try {
+      filePath = this._discoverImportPath(filePath);
+      let file;
+      if (this.filesByName.has(filePath)) {
+        file = this.filesByName.get(filePath);
+      } else {
+        file = this._createIncludedFile(filePath, rootFile);
+      }
+
+      return this.compileOneFile(file, this.filesByName);
+    } catch (err) {
+      console.error(err.message)
+      console.error(err.stack)
+      throw err;
+    }
+  }
+
+  _discoverImportPath(filePath) {
+    let potentialPaths = Array.isArray(filePath) ? filePath : [filePath];
+
+    for (let i = 0,
+           potentialPath = potentialPaths[i]; i < potentialPaths.length; i++, potentialPath = potentialPaths[i]) {
+      if (this.filesByName.has(potentialPath) || (fs.existsSync(potentialPaths[i]) && fs.lstatSync(potentialPaths[i]).isFile())) {
+        return potentialPath;
+      }
+    }
+
+    throw new Error(`File not found at any of the following paths: ${JSON.stringify(potentialPaths)}`);
+  }
+
+  _createIncludedFile(importPath, rootFile) {
+    console.log('create included file')
+    const file = new IncludedFile(importPath, rootFile);
+    file.importPath = importPath;
+
+    file.prepInputFile().await();
+    this.filesByName.set(importPath, file);
+    this._setProcessors(file);
+  }
 };
 
