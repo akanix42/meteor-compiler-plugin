@@ -31,6 +31,7 @@ Package.registerBuildPlugin({
     /* end required for sha1 */
     // 'meteor-scss': 'file:///D:\\projects\\npm\\meteor-scss',
 
+    'p-reduce': '1.0.0',
     // 'meteor-build-plugin-options': '0.0.1',
   },
   sources: [

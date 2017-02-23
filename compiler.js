@@ -53,7 +53,6 @@ export default class Compiler extends MultiFileCachingCompiler {
 
     super.processFilesForTarget(files);
 
-    this.profilingResults.processFilesForTarget = profile(start, 'processFilesForTarget');
 
     function removeFilesFromExcludedFolders(files) {
       if (!buildPluginOptions.ignorePaths.length) {
@@ -108,12 +107,12 @@ export default class Compiler extends MultiFileCachingCompiler {
     let isRoot = null;
     for (let i = 0; i < inputFile.processors.length; i++) {
       let processor = inputFile.processors[i];
-        if (processor.isRoot(inputFile)) {
-          inputFile.isRoot = true;
-          return true;
-        }
-        isRoot = false;
+      if (processor.isRoot(inputFile)) {
+        inputFile.isRoot = true;
+        return true;
       }
+      isRoot = false;
+    }
 
     /* If no processors handle this file, it's excluded from processing. */
     inputFile.isRoot = isRoot === null ? false : isRoot;
@@ -122,27 +121,36 @@ export default class Compiler extends MultiFileCachingCompiler {
 
   _setProcessors(inputFile) {
     const fileExtension = path.extname(inputFile.getPathInPackage()).substring(1);
+    inputFile.processors = [];
     for (let i = 0; i < this.processors.length; i++) {
       let processor = this.processors[i];
       if (processor.handlesFileExtension(fileExtension)) {
-          inputFile.processors = inputFile.processors || [];
-          inputFile.processors.push(processor);
+        inputFile.processors.push(processor);
       }
     }
   }
 
   compileOneFile(inputFile, filesByName) {
+    return Promise.await(this._compileOneFile(inputFile, filesByName));
+  }
+
+  async _compileOneFile(inputFile, filesByName) {
     this._updateFilesByName(filesByName);
 
     this._prepInputFile(inputFile);
-    const processingResult = inputFile.processors.reduce((result, processor) => Promise.await(processor.process(inputFile, result)), { maps: {} });
-    
+
+    const pReduce = require('p-reduce');
+    const initialResult = { maps: {}, filePath: inputFile.getPathInPackage() };
+    const processingResult = await pReduce(inputFile.processors, async function (result, processor) {
+      return await processor.process(inputFile, result);
+    }, initialResult);
+
     const compileResult = this._generateOutput(inputFile, processingResult);
     return { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
   }
 
   _generateOutput(inputFile, processingResult) {
-    const filePath = inputFile.getPathInPackage();
+    const filePath = processingResult.filePath;
     const isLazy = filePath.split('/').indexOf('imports') >= 0;
     const shouldAddStylesheet = inputFile.getArch().indexOf('web') === 0;
     const finalResult = { isLazy, filePath };
@@ -248,7 +256,7 @@ export default class Compiler extends MultiFileCachingCompiler {
     return importPath;
   }
 
-  importFile(filePath, rootFile) {
+  async importFile(filePath, rootFile) {
     try {
       filePath = this._discoverImportPath(filePath);
       let file;
@@ -258,7 +266,8 @@ export default class Compiler extends MultiFileCachingCompiler {
         file = this._createIncludedFile(filePath, rootFile);
       }
 
-      return this.compileOneFile(file, this.filesByName);
+      const result = await this._compileOneFile(file, this.filesByName);
+      return result;
     } catch (err) {
       console.error(err.message)
       console.error(err.stack)
