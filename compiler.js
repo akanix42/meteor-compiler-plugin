@@ -93,7 +93,9 @@ export default class Compiler extends MultiFileCachingCompiler {
         options = processorEntry[1];
       }
 
-      const Processor = files[0].require(processorPackage).default;
+      const Processor = processorPackage.match(/^meteor\//)
+        ? compilerGlobal.meteorPackages[processorPackage]
+        : files[0].require(processorPackage).default;
       return new Processor(options, this)
     });
   }
