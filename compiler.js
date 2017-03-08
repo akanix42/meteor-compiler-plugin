@@ -221,6 +221,7 @@ export default class Compiler extends MultiFileCachingCompiler {
       return;
     }
 
+    file.imports = [];
     file.referencedImportPaths = [];
     file.contents = file.getContentsAsString() || '';
     file.rawContents = file.contents;
