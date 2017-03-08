@@ -34,6 +34,7 @@ export default class Compiler extends MultiFileCachingCompiler {
     this.optionsHash = null;
     this.pluginOptions = null;
     this.buildPluginOptions = null;
+    this.memCache = new Map();
   }
 
   processFilesForTarget(files) {
@@ -135,18 +136,24 @@ export default class Compiler extends MultiFileCachingCompiler {
   }
 
   async _compileOneFile(inputFile, filesByName) {
+    if (this.memCache.has(inputFile)) {
+      console.log(`Using cache for ${inputFile.getPathInPackage()}`);
+      return this.memCache.get(inputFile);
+    }
     this._updateFilesByName(filesByName);
 
     this._prepInputFile(inputFile);
 
     const pReduce = require('p-reduce');
-    const initialResult = { maps: {}, filePath: inputFile.getPathInPackage() };
+    const initialResult = { maps: {}, filePath: inputFile.getPathInPackage(), css: '', js: '' };
     const processingResult = await pReduce(inputFile.processors, async function (result, processor) {
       return await processor.process(inputFile, result);
     }, initialResult);
 
     const compileResult = this._generateOutput(inputFile, processingResult);
-    return { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
+    const dataToReturn = { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
+    this.memCache.set(inputFile, dataToReturn);
+    return dataToReturn;
   }
 
   _generateOutput(inputFile, processingResult) {
