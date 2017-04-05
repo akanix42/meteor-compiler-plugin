@@ -13,28 +13,27 @@ import { reloadOptions } from './options';
 // import profile from './helpers/profile';
 // import ImportPathHelpers from './helpers/import-path-helpers';
 import { stripIndent, stripIndents } from 'common-tags';
+import cssModulesGlobal from 'meteor/nathantreid:css-modules-global';
 //
 // let pluginOptions = pluginOptionsWrapper.options;
 const recursive = Meteor.wrapAsync(recursiveUnwrapped);
 
-export default class Compiler extends MultiFileCachingCompiler {
-  constructor(compilerName, settingsFieldName = compilerName) {
+export default class CssModulesCompiler extends MultiFileCachingCompiler {
+  constructor() {
     super({
-      compilerName: compilerName,
+      compilerName: 'css-modules',
       defaultCacheSize: 1024 * 1024 * 10
     });
     this.profilingResults = {
       processFilesForTarget: null,
-      _transpileScssToCss: null,
       _transpileCssModulesToCss: null
     };
 
-    this.processors = null;
+    this.preprocessors = null;
     this.filesByName = null;
     this.optionsHash = null;
     this.pluginOptions = null;
     this.buildPluginOptions = null;
-    this.memCache = new Map();
   }
 
   processFilesForTarget(files) {
@@ -43,13 +42,13 @@ export default class Compiler extends MultiFileCachingCompiler {
     if (!buildPluginOptions.enableCache) {
       this._cache.reset();
     }
-    const start = profile();
+    // const start = profile();
     this.optionsHash = this.pluginOptions.hash;
 
     files = removeFilesFromExcludedFolders(files);
     files = addFilesFromIncludedFolders(files);
 
-    this._setupPreprocessors(files);
+    this._setupProcessors(files);
     this.filesByName = null;
 
     super.processFilesForTarget(files);
@@ -83,8 +82,17 @@ export default class Compiler extends MultiFileCachingCompiler {
     }
   }
 
-  _setupPreprocessors(files) {
-    this.processors = this.pluginOptions.processors.map(processorEntry => {
+  _setupProcessors(files) {
+    this.preprocessors = setUpProcessors(this.pluginOptions.preprocessors, cssModulesGlobal.preprocessors);
+    this.postcssPreprocessors = setUpProcessors(this.pluginOptions.postcssPreprocessors, cssModulesGlobal.postcssPreprocessors);
+    this.cssModulesProcessor = setUpProcessor(this.pluginOptions.cssModulesProcessor, cssModulesGlobal.cssModulesProcessor);
+    this.postcssPostprocessors = setUpProcessors(this.pluginOptions.postcssPostprocessors, cssModulesGlobal.postcssPostprocessors);
+
+    function setUpProcessors(processorsFromOptions, processorsFromGlobal) {
+      return processorsFromOptions.map(processorEntry => setUpProcessor(processorEntry, processorsFromGlobal));
+    }
+
+    function setUpProcessor(processorEntry, processorsFromGlobal) {
       let processorPackage, options;
       if (typeof processorEntry === 'string') {
         processorPackage = processorEntry;
@@ -94,10 +102,10 @@ export default class Compiler extends MultiFileCachingCompiler {
       }
 
       const Processor = processorPackage.match(/^meteor\//)
-        ? compilerGlobal.meteorPackages[processorPackage]
+        ? processorsFromGlobal[processorPackage]
         : files[0].require(processorPackage).default;
-      return new Processor(options, this)
-    });
+      return new Processor(options, this);
+    }
   }
 
   isRoot(inputFile) {
@@ -123,12 +131,19 @@ export default class Compiler extends MultiFileCachingCompiler {
   }
 
   _setProcessors(inputFile) {
-    const fileExtension = path.extname(inputFile.getPathInPackage()).substring(1);
     inputFile.processors = [];
-    for (let i = 0; i < this.processors.length; i++) {
-      let processor = this.processors[i];
-      if (processor.handlesFileExtension(fileExtension)) {
-        inputFile.processors.push(processor);
+
+    addApplicableProcessors(inputFile, this.preprocessors);
+    addApplicableProcessors(inputFile, this.postcssPreprocessors);
+    addApplicableProcessors(inputFile, [this.cssModulesProcessor]);
+    addApplicableProcessors(inputFile, this.postcssPostprocessors);
+
+    function addApplicableProcessors(inputFile, processors) {
+      for (let i = 0; i < processors.length; i++) {
+        let processor = processors[i];
+        if (processor.handlesFile(inputFile)) {
+          inputFile.processors.push(processor);
+        }
       }
     }
   }
@@ -138,10 +153,6 @@ export default class Compiler extends MultiFileCachingCompiler {
   }
 
   async _compileOneFile(inputFile, filesByName) {
-    if (this.memCache.has(inputFile)) {
-      console.log(`Using cache for ${inputFile.getPathInPackage()}`);
-      return this.memCache.get(inputFile);
-    }
     this._updateFilesByName(filesByName);
 
     this._prepInputFile(inputFile);
@@ -153,9 +164,7 @@ export default class Compiler extends MultiFileCachingCompiler {
     }, initialResult);
 
     const compileResult = this._generateOutput(inputFile, processingResult);
-    const dataToReturn = { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
-    this.memCache.set(inputFile, dataToReturn);
-    return dataToReturn;
+    return { compileResult, referencedImportPaths: inputFile.referencedImportPaths, processingResult, inputFile };
   }
 
   _generateOutput(inputFile, processingResult) {
@@ -276,8 +285,7 @@ export default class Compiler extends MultiFileCachingCompiler {
         file = this._createIncludedFile(filePath, rootFile);
       }
 
-      const result = await this._compileOneFile(file, this.filesByName);
-      return result;
+      return await this._compileOneFile(file, this.filesByName);
     } catch (err) {
       console.error(err.message)
       console.error(err.stack)

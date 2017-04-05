@@ -1,10 +1,12 @@
 import { createReplacer } from 'regex-replacer';
+import CssModulesProcessor from './css-modules-processor';
+
+import jsonToRegex from 'json-to-regex';
 
 import pluginOptionsLoader from './bp/options';
 // import pluginOptionsLoader from 'meteor-build-plugin-options';
 
-const optionsLoader = pluginOptionsLoader.registerPackage('compiler', { getDefaultOptions, processOptions });
-
+const optionsLoader = pluginOptionsLoader.registerPackage('cssModules', { getDefaultOptions, processOptions });
 
 const pluginOptions = {};
 pluginOptions.options = optionsLoader.loadOptions();
@@ -25,21 +27,33 @@ function getDefaultOptions() {
     buildPlugin: {
       enableCache: true,
       enableProfiling: false,
-      extensions: ['vue'],
+      extensions: ['css', 'm.css', 'mss'],
       filenames: [],
       ignorePaths: [],
       includePaths: [],
       outputJsFilePath: '{dirname}/{basename}{extname}',
       outputCssFilePath: '{dirname}/{basename}{extname}',
       passthroughPaths: [],
-      specificArchitecture: 'web',
+      enableServerSideRendering: false,
+      enableWebRendering: true,
     },
-    processors: [
-      ['meteor-scss', { handles: 'scss' }],
-      // 'meteor-stylus',
-      // 'meteor-less',
-      'meteor-css-modules'
-    ],
+    preprocessors: {
+      'nathantreid:css-modules-scss': {
+        extensions: ['scss', 'sass'],
+        globalVariables: [],
+      },
+    },
+    processor: {
+      passthroughPaths: [],
+      cssClassNamingConvention: {
+        replacements: [],
+      },
+      jsClassNamingConvention: {
+        camelCase: false,
+      },
+    },
+    postcssPreProcessors: {},
+    postcssPostProcessors: {},
     hash: null
   };
 }
@@ -50,13 +64,6 @@ function processOptions(options) {
   return pluginOptions.options = options;
 
   function processPassthroughPathExpressions(options) {
-    if (!options.passthroughPaths) {
-      options.passthroughPaths = [];
-      return;
-    }
-
-    const createPatternRegExp = pattern => typeof pattern === 'string' ? new RegExp(pattern) : new RegExp(pattern[0], pattern[1]);
-    options.passthroughPaths = options.passthroughPaths.map(createPatternRegExp);
+    options.passthroughPaths = options.passthroughPaths.map(jsonToRegex);
   }
-
 }
